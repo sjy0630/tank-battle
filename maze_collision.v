@@ -1,6 +1,37 @@
-// 查询一个方形碰撞盒是否与迷宫的墙重叠。
+//完成整步移动检测，返回各轴是否被阻挡。
 module maze_collision (
-    input wire clk, rst, request,
+    input wire [9:0] x, y,
+    input wire [9:0] next_x, next_y,
+    input wire [5:0] radius,
+    input wire [1:0] map_mode,
+    input wire [6:0] cell_size,
+    input wire [3:0] wall_size,
+    input wire [9:0] maze_x, maze_y, maze_w, maze_h,
+    input wire [107:0] right_walls, bottom_walls,
+    output wire hit_x, hit_y
+);
+    // 先尝试 X 位移，Y 保持原位置。
+    maze_overlap u_check_x (
+        .x(next_x), .y(y), .radius(radius),
+        .map_mode(map_mode), .cell_size(cell_size), .wall_size(wall_size),
+        .maze_x(maze_x), .maze_y(maze_y), .maze_w(maze_w), .maze_h(maze_h),
+        .right_walls(right_walls), .bottom_walls(bottom_walls),
+        .hit(hit_x)
+    );
+
+    // X 被阻挡时采用原 X，再判断 Y 位移
+    wire [9:0] accepted_x = hit_x ? x : next_x;
+    maze_overlap u_check_y (
+        .x(accepted_x), .y(next_y), .radius(radius),
+        .map_mode(map_mode), .cell_size(cell_size), .wall_size(wall_size),
+        .maze_x(maze_x), .maze_y(maze_y), .maze_w(maze_w), .maze_h(maze_h),
+        .right_walls(right_walls), .bottom_walls(bottom_walls),
+        .hit(hit_y)
+    );
+endmodule
+
+// 查询一个方形碰撞盒是否与迷宫的墙重叠。
+module maze_overlap (
     input wire [9:0] x, y,
     input wire [5:0] radius,
     input wire [1:0] map_mode,
@@ -8,22 +39,22 @@ module maze_collision (
     input wire [3:0] wall_size,
     input wire [9:0] maze_x, maze_y, maze_w, maze_h,
     input wire [107:0] right_walls, bottom_walls,
-    output reg valid, hit
+    output wire hit
 );
     `include "param.vh"
 
-    // 盒子范围为 [中心-半径, 中心+半径)，取最后一个覆盖像素作为上界。
-    wire [10:0] x_lo = {1'b0, x} - radius;
-    wire [10:0] y_lo = {1'b0, y} - radius;
-    wire [10:0] x_hi = {1'b0, x} + radius - 11'd1;
-    wire [10:0] y_hi = {1'b0, y} + radius - 11'd1;
-    wire outside = x_lo[10] || y_lo[10] ||
-                   x_lo < {1'b0, maze_x} + wall_size ||
-                   y_lo < {1'b0, maze_y} + wall_size ||
-                   x_hi >= {1'b0, maze_x} + maze_w ||
-                   y_hi >= {1'b0, maze_y} + maze_h;
+    // 得到碰撞箱范围
+    wire [9:0] x_lo = x - radius;
+    wire [9:0] y_lo = y - radius;
+    wire [9:0] x_hi = x + radius - 10'd1;
+    wire [9:0] y_hi = y + radius - 10'd1;
+    // 判断有没有直接出地图迷宫边界
+    wire outside = x < maze_x + wall_size + radius ||
+                   y < maze_y + wall_size + radius ||
+                   x > maze_x + maze_w - radius ||
+                   y > maze_y + maze_h - radius;
 
-    // 三档格长都能被 8 整除。先用高 7 位做除法，再拼回格内偏移的低 3 位。
+    // 把一个坐标换算成是格子编号+格内位置
     function [10:0] grid_position;
         input [9:0] pixel;
         input [1:0] mode;
@@ -43,57 +74,34 @@ module maze_collision (
                     remainder  = pixel[9:3] % 7'd6;
                 end
             endcase
-            grid_position = {cell_index, remainder, pixel[2:0]};
+            grid_position = {cell_index, remainder, pixel[2:0]};//4位格子编号+7位格内位置
         end
     endfunction
 
-    reg [2:0] pending;
-    reg [9:0] rel_x_lo, rel_y_lo, rel_x_hi, rel_y_hi;
-    reg outside_bounds, outside_grid, outside_walls;
-    reg [10:0] grid_x_lo, grid_y_lo, grid_x_hi, grid_y_hi;
-    reg [6:0] idx00, idx01, idx10, idx11;
-    reg spans_cols, spans_rows, right_edge, bottom_edge;
+    wire [9:0] rel_x_lo = x_lo - maze_x;//得到碰撞盒坐标范围在迷宫内部的坐标
+    wire [9:0] rel_y_lo = y_lo - maze_y;
+    wire [9:0] rel_x_hi = x_hi - maze_x;
+    wire [9:0] rel_y_hi = y_hi - maze_y;
+    wire [10:0] grid_x_lo = grid_position(rel_x_lo, map_mode);//将迷宫内部坐标转换为格子位置
+    wire [10:0] grid_y_lo = grid_position(rel_y_lo, map_mode);
+    wire [10:0] grid_x_hi = grid_position(rel_x_hi, map_mode);
+    wire [10:0] grid_y_hi = grid_position(rel_y_hi, map_mode);
+
+    // 根据碰撞箱所在的位置得到需要查询的index，进一步查询这个格子有没有墙
+    wire [6:0] idx00 = grid_y_lo[10:7] * MAX_COLS + grid_x_lo[10:7];
+    wire [6:0] idx01 = grid_y_lo[10:7] * MAX_COLS + grid_x_hi[10:7];
+    wire [6:0] idx10 = grid_y_hi[10:7] * MAX_COLS + grid_x_lo[10:7];
+    wire [6:0] idx11 = grid_y_hi[10:7] * MAX_COLS + grid_x_hi[10:7];
+    wire spans_cols = grid_x_lo[10:7] != grid_x_hi[10:7];//判断碰撞箱有没有跨越格子边界
+    wire spans_rows = grid_y_lo[10:7] != grid_y_hi[10:7];
     wire [6:0] wall_start = cell_size - wall_size;
+    wire right_edge = grid_x_hi[6:0] >= wall_start;//判断碰撞箱有没有碰到格子内的墙
+    wire bottom_edge = grid_y_hi[6:0] >= wall_start;
 
-    always @(posedge clk) begin
-        if (rst) begin
-            pending <= 0;
-            valid <= 0;
-            hit <= 0;
-        end else begin
-            // 逐拍完成相对坐标、格子坐标、墙位索引和位图查询。
-            pending <= {pending[1:0], request};
-            valid <= pending[2];
-
-            rel_x_lo <= x_lo - maze_x;
-            rel_y_lo <= y_lo - maze_y;
-            rel_x_hi <= x_hi - maze_x;
-            rel_y_hi <= y_hi - maze_y;
-            outside_bounds <= outside;
-
-            grid_x_lo <= grid_position(rel_x_lo, map_mode);
-            grid_y_lo <= grid_position(rel_y_lo, map_mode);
-            grid_x_hi <= grid_position(rel_x_hi, map_mode);
-            grid_y_hi <= grid_position(rel_y_hi, map_mode);
-            outside_grid <= outside_bounds;
-
-            // 盒子小于一格，因此只需考虑首尾两列和首尾两行。
-            idx00 <= grid_y_lo[10:7] * MAX_COLS + grid_x_lo[10:7];
-            idx01 <= grid_y_lo[10:7] * MAX_COLS + grid_x_hi[10:7];
-            idx10 <= grid_y_hi[10:7] * MAX_COLS + grid_x_lo[10:7];
-            idx11 <= grid_y_hi[10:7] * MAX_COLS + grid_x_hi[10:7];
-            spans_cols <= grid_x_lo[10:7] != grid_x_hi[10:7];
-            spans_rows <= grid_y_lo[10:7] != grid_y_hi[10:7];
-            right_edge <= grid_x_hi[6:0] >= wall_start;
-            bottom_edge <= grid_y_hi[6:0] >= wall_start;
-            outside_walls <= outside_grid;
-
-            // 跨到下一列就已经覆盖前一列的右墙带，跨行时同理。
-            hit <= outside_walls ||
-                   (spans_cols && (right_walls[idx00] || right_walls[idx10])) ||
-                   (right_edge && (right_walls[idx01] || right_walls[idx11])) ||
-                   (spans_rows && (bottom_walls[idx00] || bottom_walls[idx01])) ||
-                   (bottom_edge && (bottom_walls[idx10] || bottom_walls[idx11]));
-        end
-    end
+    //碰撞包括跨有墙的格子和碰到格子内的墙
+    assign hit = outside ||
+                 (spans_cols && (right_walls[idx00] || right_walls[idx10])) ||
+                 (right_edge && (right_walls[idx01] || right_walls[idx11])) ||
+                 (spans_rows && (bottom_walls[idx00] || bottom_walls[idx01])) ||
+                 (bottom_edge && (bottom_walls[idx10] || bottom_walls[idx11]));
 endmodule

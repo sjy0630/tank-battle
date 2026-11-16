@@ -10,11 +10,11 @@ module bullet_show (
     wire [MAX_BULLETS-1:0] hit;
     genvar n;
     generate for (n = 0; n < MAX_BULLETS; n = n + 1) begin : draw_bullet
-        wire [10:0] x = {1'b0, bullet_x[n*10 +: 10]};
-        wire [10:0] y = {1'b0, bullet_y[n*10 +: 10]};
+        wire [9:0] x = bullet_x[n*10 +: 10];
+        wire [9:0] y = bullet_y[n*10 +: 10];
         assign hit[n] = active[n] &&
-                        {1'b0, h_cnt} + radius >= x && h_cnt < x + radius &&
-                        {1'b0, v_cnt} + radius >= y && v_cnt < y + radius;
+                        h_cnt + radius >= x && h_cnt < x + radius &&
+                         v_cnt + radius >= y && v_cnt < y + radius;
     end endgenerate
-    assign bullet_pixel = |hit;
+    assign bullet_pixel = |hit;//这个像素只要有子弹像素就画上去
 endmodule

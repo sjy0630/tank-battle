@@ -99,17 +99,16 @@ module tank_control(
     assign forward_dy = dy;
 
     wire [5:0] radius = (TANK_R * sprite_scale) >> 1;
-    wire signed [9:0] move_dx = down ? -dx : dx;
-    wire signed [9:0] move_dy = down ? -dy : dy;
-    wire move_done;
-    wire signed [FRAC_BITS+9:0] next_x, next_y;
-    wall_move #(.FRAC_BITS(FRAC_BITS)) u_wall_move (
-        .clk(clk), .rst(rst), .start(frame_tick && (up ^ down)),
-        .x(pos_x), .y(pos_y), .dx(move_dx), .dy(move_dy), .radius(radius),
+    wire hit_x, hit_y;
+    maze_collision u_collision (
+        .x(h_tank), .y(v_tank),
+        .next_x((pos_x + (down ? -dx : dx)) >> FRAC_BITS),
+        .next_y((pos_y + (down ? -dy : dy)) >> FRAC_BITS),
+        .radius(radius),
         .map_mode(map_mode), .cell_size(cell_size), .wall_size(wall_size),
         .maze_x(maze_x), .maze_y(maze_y), .maze_w(maze_w), .maze_h(maze_h),
         .right_walls(right_walls), .bottom_walls(bottom_walls),
-        .done(move_done), .hit_x(), .hit_y(), .next_x(next_x), .next_y(next_y)
+        .hit_x(hit_x), .hit_y(hit_y)
     );
 
     always @(posedge clk) begin //位置移动控制逻辑
@@ -117,11 +116,9 @@ module tank_control(
             // 出生点以像素输入，左移 FRAC_BITS 位换成定点数。
             pos_x <= spawn_x << FRAC_BITS;
             pos_y <= spawn_y << FRAC_BITS;
-        end
-        else if(move_done) begin
-            // 只提交分轴查墙后接受的位置，有墙的轴留在原坐标。
-            pos_x <= next_x;
-            pos_y <= next_y;
+        end else if (frame_tick && (up ^ down)) begin
+            pos_x <= pos_x + (hit_x ? 10'sd0 : (down ? -dx : dx));
+            pos_y <= pos_y + (hit_y ? 10'sd0 : (down ? -dy : dy));
         end
     end
 

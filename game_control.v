@@ -60,8 +60,7 @@ module game_control (
         .bottom_walls (bottom_walls)
     );
 
-    reg up,down,left,right,up1,down1,left1,right1;
-    reg fire, fire1;
+    reg up,down,left,right,up1,down1,left1,right1,fire, fire1;
 
     always @(posedge clk)begin //两级同步按键
         if(rst) begin
