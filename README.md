@@ -2,7 +2,53 @@
 
 这是一个运行在 Basys3 上的单坦克迷宫小游戏，使用 Verilog 编写，并通过 VGA 输出 640×480 画面。当前版本支持三档地图、坦克移动与挡墙、发射子弹和子弹反弹。
 
-## 操作方式
+## 一、模块结构
+
+系统以 [`top_module`](top.v) 为顶层。**控制侧决定游戏状态，显示侧把状态转换成 VGA 像素。** 顶层负责板级输入输出和两侧的连线。
+
+### 1. 模块实例层级
+
+实线表示「上层模块实例化下层模块」。坦克和子弹复用同一份分轴移动和碰撞查询源码，各自有一套硬件实例。
+
+```mermaid
+flowchart TB
+    top["top_module"]
+    top --> control["game_control｜游戏控制"]
+    top --> show["game_show｜VGA 显示"]
+
+    control --> config["maze_config"]
+    control --> fixedMap["maze_fixed"]
+    control --> tankControl["tank_control"]
+    control --> bulletControl["bullet_control"]
+
+    tankControl --> tankMove["wall_move"]
+    tankMove --> tankCollision["maze_collision"]
+    bulletControl --> bulletMove["wall_move"]
+    bulletMove --> bulletCollision["maze_collision"]
+
+    show --> timing["vga_timing"]
+    show --> mazeShow["maze_show"]
+    show --> tankSprite["tank_sprite"]
+    show --> bulletShow["bullet_show"]
+```
+
+### 2. 控制与显示之间的信号流
+
+```mermaid
+flowchart LR
+    buttons["板上按键与 SW15"] -->|"操作与复位"| control["game_control"]
+    control -->|"地图配置、墙位、坦克与子弹状态"| show["game_show"]
+    show -.->|"frame_tick｜每帧一个更新脉冲"| control
+    show -->|"RGB、Hsync、Vsync"| vga["VGA 显示器"]
+```
+
+1. **复位选图。** 控制侧锁存随机样本。`maze_config` 选地图档位，`maze_fixed` 用同一个档位输出对应的墙位。控制侧用墙位判断碰撞，显示侧用同一份墙位画墙。 [`game_control.v`](game_control.v) · [`maze_config.v`](maze_config.v) · [`maze_fixed.v`](maze_fixed.v)
+2. **每帧更新状态。** 显示侧的 `vga_timing` 产生 `frame_tick`。控制侧收到脉冲后开始更新坦克和子弹，使用 `wall_move` 分轴试走、用 `maze_collision` 查墙。子弹发射时读取坦克中心和朝向对应的速度分量。 [`tank_control.v`](tank_control.v) · [`bullet_control.v`](bullet_control.v) · [`wall_move.v`](wall_move.v) · [`maze_collision.v`](maze_collision.v)
+3. **逐像素合成画面。** `vga_timing` 把扫描坐标送给墙、坦克和子弹绘制模块。`game_show` 在可见区按坦克、墙、子弹、地面的优先级选择颜色，消隐区输出黑色。 [`vga_timing.v`](vga_timing.v) · [`game_show.v`](game_show.v) · [`maze_show.v`](maze_show.v) · [`tank_sprite.v`](tank_sprite.v) · [`bullet_show.v`](bullet_show.v)
+
+[`param.vh`](param.vh) 是公共参数头文件，[`tank.mem`](tank.mem) 是坦克贴图 ROM 数据。`maze_gen.v` 和 `seg7_hex.v` 分别预留给随机墙布局和数码管显示。
+
+## 二、操作方式
 
 | 输入 | 功能 |
 | --- | --- |
@@ -21,32 +67,17 @@
 
 每颗子弹从坦克中心沿当前朝向发射，初速是同档坦克的两倍。场上最多同时存在 5 颗子弹，每颗存活 480 帧，约 8 秒。当前已实现子弹与墙的交互。子弹命中坦克、双人对战和计分属于后续开发内容。
 
-## 模块组成
+## 三、关键实现
 
-| 模块 | 职责 |
-| --- | --- |
-| [`top_module`](top.v) | 连接板载时钟、拨码开关、按键、LED 和 VGA，连接游戏控制与显示两侧 |
-| [`game_control`](game_control.v) | 同步按键、锁存地图随机样本、计算出生点，汇总坦克和子弹的状态 |
-| [`maze_config`](maze_config.v)、[`maze_fixed`](maze_fixed.v) | 根据随机样本选地图档位，分别提供尺寸和对应的固定墙位 |
-| [`tank_control`](tank_control.v)、[`bullet_control`](bullet_control.v) | 更新坦克朝向和位置，管理子弹槽、速度、反弹和寿命 |
-| [`wall_move`](wall_move.v)、[`maze_collision`](maze_collision.v) | 分轴试走并查询碰撞盒是否与墙相交，供坦克和子弹共用 |
-| [`game_show`](game_show.v)、[`vga_timing`](vga_timing.v) | 生成 VGA 扫描坐标、同步信号和帧脉冲，合成各图层的 RGB 输出 |
-| [`maze_show`](maze_show.v)、[`tank_sprite`](tank_sprite.v)、[`bullet_show`](bullet_show.v) | 分别判断当前像素是否属于墙、坦克贴图和子弹 |
-
-[`param.vh`](param.vh) 保存公共常量，[`tank.mem`](tank.mem) 保存坦克的 32 个朝向、每个朝向 16×16 像素的贴图。`maze_gen.v` 是预留的随机墙布局生成模块。
-
-## 设计要点
-
-- **控制和显示共用 100 MHz 系统时钟。** `game_show` 通过 VGA 时序模块每帧产生一个时钟周期宽的 `frame_tick`。控制侧以它发起游戏状态更新，显示侧根据当前扫描坐标读取状态并决定像素颜色。
 - **墙位是渲染和碰撞的共同依据。** 每个格子有一位右墙和一位下墙。三档地图都用 `row * 12 + col` 编号。绘墙时判断像素是否落在墙带，碰撞时判断整个碰撞盒是否覆盖墙带。
 - **坦克与子弹共用分轴碰撞。** 先试 X，再用接受后的 X 试 Y。坦克在受阻的轴上保留原坐标，因此能沿墙滑动。子弹在受阻的轴上反转速度分量。
 - **用定点数保存亚像素位移。** `FRAC_BITS = 6`，位置寄存器中 64 个单位代表 1 像素。显示取整数像素坐标，状态更新继续保留小数部分。
 
-## 验证记录
+## 四、验证记录
 
 | 检查 | 已取得的结果 |
 | --- | --- |
-| 墙壁碰撞 | 对三档地图做了 1,272 次碰撞盒与逐像素参考判断的比对，覆盖内墙、外围边界、贴墙滑动和墙角阻挡 |
+| 墙壁碰撞 | 对三档地图做了 1,272 次碰撞盒与逐像素参考判断的比对，另验证了贴墙滑动和墙角阻挡 |
 | 子弹控制 | 仿真通过横向和纵向反弹、长按单次发射、五发上限与到期回收 |
 | 顶层输出 | 仿真确认从 `BTN_C` 到 VGA 子弹像素的完整链路 |
 | FPGA 实现 | Vivado 2019.1 布线后满足 100 MHz 约束，最差建立时间余量为 +0.844 ns |
