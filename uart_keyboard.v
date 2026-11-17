@@ -4,10 +4,10 @@ module uart_keyboard (
     output reg [4:0] p1_keys, p2_keys,
     output reg packet_seen, link_alive
 );
-    localparam [9:0] BIT_CLKS = 868; // 100 MHz 下一个串口位约 868 拍
+    localparam [7:0] BIT_CLKS = 217; // 25 MHz 下一个串口位约 217 拍
     // J4 的接收线和板载时钟不同步，先经过两级寄存器，再用 rx_sync。
     reg rx_sample, rx_sync;
-    reg [9:0] count;
+    reg [7:0] count;
     // 0 等待，1 检查起始位，2～9 接收 8 个数据位，10 检查停止位。
     reg [3:0] bit_index;
     reg [7:0] data;

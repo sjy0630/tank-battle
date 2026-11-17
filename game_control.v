@@ -93,13 +93,12 @@ module game_control (
         .tank_alive(tank_alive), .score_p1(score_p1), .score_p2(score_p2)
     );
 
-    // 查墙是组合逻辑，回合进行中直接在帧边界更新位置和子弹。
     wire physics_tick = frame_tick && playing && !player_rst;
 
     wire [9:0] half_cell = {3'b000, cell_size} >> 1;
-    wire [5:0] tank_radius = (TANK_R * sprite_scale) >> 1;
+    wire [5:0] tank_hit_radius = (TANK_HIT_R * sprite_scale) >> 1;
     assign bullet_radius = (BULLET_R * sprite_scale + 1) >> 1;
-    wire [6:0] hit_distance = tank_radius + bullet_radius;
+    wire [6:0] hit_distance = tank_hit_radius + bullet_radius;
 
     genvar p, n, t;
     generate for (p = 0; p < 2; p = p + 1) begin : players//生成两个玩家

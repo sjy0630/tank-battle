@@ -16,7 +16,7 @@ module ps2_keyboard (
     reg [3:0] bit_count;
     reg [7:0] scan_code;
     reg parity_ok, extended, releasing;
-    reg [17:0] timeout_count;
+    reg [15:0] timeout_count;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -105,8 +105,8 @@ module ps2_keyboard (
                 end
             end
         end else if (bit_count != 0 || extended || releasing) begin
-            // 100 MHz 下 2 ms 没有后续时钟，丢弃残缺帧或前缀。
-            if (timeout_count == 18'd199999) begin
+            // 25 MHz 下 50000 拍约 2 ms，超时就丢弃残缺帧或前缀。
+            if (timeout_count == 16'd49999) begin
                 frame_error <= 1;
                 bit_count <= 0;
                 timeout_count <= 0;

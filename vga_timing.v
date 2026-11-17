@@ -9,17 +9,8 @@ module vga_timing(
     output reg frame_tick,
     output pix_en
     );
-    reg [1:0]cnt;
-    always @(posedge clk) begin
-        if (rst) begin
-            cnt <=0;
-        end
-        else begin
-        cnt <= cnt+1;
-        end
-    end
-    assign pix_en = (cnt == 2'b11);
-    //时钟分频，25MHz，同时传给输出，在其他模块也可以用分频后的时钟信号
+    // 工作时钟已是 25 MHz，每一拍扫描一个像素。
+    assign pix_en = 1'b1;
 
     `include "param.vh"
     always @(posedge clk)begin
@@ -29,10 +20,10 @@ module vga_timing(
             v_cnt <= 0;
             frame_tick <= 0;
         end
-        else if(h_cnt< H_TOTAL-1 && pix_en)begin
+        else if(h_cnt < H_TOTAL-1)begin
             h_cnt <= h_cnt+1;
         end
-        else if(pix_en)begin
+        else begin
             h_cnt <= 0;
             if(v_cnt < V_TOTAL-1)begin
             v_cnt <= v_cnt+1; end

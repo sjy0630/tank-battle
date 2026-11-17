@@ -29,7 +29,8 @@ localparam SPRITE    = 16;     // ROM 中贴图边长
 localparam TANK_SCALE= 2;      // 放大倍数
 localparam TANK_SIZE = SPRITE * TANK_SCALE;   // 屏幕上 32×32
 localparam N_DIR     = 32;     // 方向数，与 tank.mem 一致
-localparam TANK_R    = 14;     // 碰撞半径，比贴图略小，手感更宽容
+localparam TANK_R    = 14;     // 坦克撞墙用的半径
+localparam TANK_HIT_R = 11;    // 子弹命中用的半径，给窄出生格里的子弹留出脱离距离
 localparam ROT_SPEED = 3;      // 每隔一帧转单位为3的角度（转一圈约 1.4 秒）
 
 // ---------- 定点数 ----------

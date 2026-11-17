@@ -19,12 +19,27 @@ module top_module (
     output wire [3:0]  an,
     output wire [15:0] led
 );
-//两级同步SW15复位信号
+    // 板载 100 MHz 先送入 MMCM。内部频率为 800 MHz，再除以 32 得到 25 MHz。
+    // 组合查墙在 100 MHz 下未过时序，25 MHz 给整套游戏统一留出 40 ns。
+    wire feedback, feedback_buf, clock_25, game_clk, clock_locked;
+    MMCME2_BASE #(
+        .CLKIN1_PERIOD(10.0),
+        .DIVCLK_DIVIDE(1),
+        .CLKFBOUT_MULT_F(8.0),
+        .CLKOUT0_DIVIDE_F(32.0)
+    ) u_work_clock (
+        .CLKIN1(clk), .CLKFBIN(feedback_buf), .CLKFBOUT(feedback),
+        .CLKOUT0(clock_25), .LOCKED(clock_locked), .PWRDWN(1'b0), .RST(1'b0)
+    );
+    BUFG u_clock_feedback (.I(feedback), .O(feedback_buf));
+    BUFG u_game_clock (.I(clock_25), .O(game_clk));
+
+    // 等 MMCM 锁定后再释放复位。SW15 和锁定状态在工作时钟下做两级同步。
     reg sw15_sample = 1;
     reg rst = 1;
 
-    always @(posedge clk) begin
-        sw15_sample <= sw[15];      // 第一级采样拨码开关
+    always @(posedge game_clk) begin
+        sw15_sample <= sw[15] || !clock_locked;
         rst         <= sw15_sample; // 第二级取上一拍的采样值
     end
 
@@ -32,20 +47,20 @@ module top_module (
     wire ps2_clock_seen, ps2_byte_seen, ps2_frame_error;
     wire [7:0] ps2_last_byte;
     ps2_keyboard u_keyboard (
-        .clk(clk), .rst(rst), .ps2_clk(PS2Clk), .ps2_data(PS2Data),
+        .clk(game_clk), .rst(rst), .ps2_clk(PS2Clk), .ps2_data(PS2Data),
         .p1_keys(ps2_p1_keys), .p2_keys(ps2_p2_keys),
         .clock_seen(ps2_clock_seen), .byte_seen(ps2_byte_seen),
         .frame_error(ps2_frame_error), .last_byte(ps2_last_byte)
     );
 
-    // 显示侧每帧送回一次更新脉冲，两个大模块共用板载 clk。
+    // 显示侧每帧送回一次更新脉冲，两个大模块共用 25 MHz 工作时钟。
     wire       frame_tick;
 
     // J4 接收电脑键盘，和 PS/2 一起接到原来的按键入口。
     wire [4:0] uart_p1_keys, uart_p2_keys;
     wire uart_packet_seen, uart_link_alive;
     uart_keyboard u_uart_keyboard (
-        .clk(clk), .rst(rst), .rx(uart_rx), .frame_tick(frame_tick),
+        .clk(game_clk), .rst(rst), .rx(uart_rx), .frame_tick(frame_tick),
         .p1_keys(uart_p1_keys), .p2_keys(uart_p2_keys),
         .packet_seen(uart_packet_seen), .link_alive(uart_link_alive)
     );
@@ -71,7 +86,7 @@ module top_module (
 
     // 读取板上按键，在 frame_tick 到来时更新坦克位置和朝向。
     game_control u_game_control (
-        .clk           (clk),
+        .clk           (game_clk),
         .rst           (rst),
         .frame_tick    (frame_tick),
         .btnU          (btnU),
@@ -107,7 +122,7 @@ module top_module (
 
     // 按 VGA 扫描坐标读取游戏状态，输出 RGB 和行场同步信号。
     game_show u_game_show (
-        .clk           (clk),
+        .clk           (game_clk),
         .rst           (rst),
         .map_mode      (map_mode),
         .cell_size     (cell_size),
@@ -142,7 +157,7 @@ module top_module (
     // 左边一位显示红方，右边一位显示蓝方。中间两位关闭。
     wire [3:0] score_an;
     seg7_hex u_score (
-        .clk(clk), .rst(rst), .value({1'b0, score_p1, 8'b0, 1'b0, score_p2}),
+        .clk(game_clk), .rst(rst), .value({1'b0, score_p1, 8'b0, 1'b0, score_p2}),
         .seg(seg), .dp(dp), .an(score_an)
     );
     assign an = score_an | 4'b0110;
@@ -151,7 +166,7 @@ module top_module (
     reg heartbeat;
     reg [5:0] frame_cnt;
 
-    always @(posedge clk) begin
+    always @(posedge game_clk) begin
         if (rst) begin
             frame_cnt <= 0;
             heartbeat <= 0;

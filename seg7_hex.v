@@ -15,13 +15,13 @@ module seg7_hex (
 
     assign dp = 1'b1;           // 小数点不亮
 
-    // 扫描计数器：用高 2 位选择当前点亮哪一位
-    reg [19:0] scan_cnt;
+    // 25 MHz 下每位扫描 65536 拍，约 2.6 ms。用最高 2 位选位。
+    reg [17:0] scan_cnt;
     always @(posedge clk)
-        if (rst) scan_cnt <= 20'd0;
-        else     scan_cnt <= scan_cnt + 20'd1;
+        if (rst) scan_cnt <= 18'd0;
+        else     scan_cnt <= scan_cnt + 18'd1;
 
-    wire [1:0] digit_sel = scan_cnt[19:18];
+    wire [1:0] digit_sel = scan_cnt[17:16];
 
     reg [3:0] nibble;
     always @(*) begin
