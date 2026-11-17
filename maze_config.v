@@ -1,10 +1,11 @@
-// 把随机样本分成三档，再按 map_mode 选择一组地图尺寸。
+// 新局抽一档地图尺寸，新回合从另外两档中抽一档。
 // maze_cols、maze_rows 以格为单位，sprite_scale 是贴图的整数放大倍数。
 // cell_size、tank_size 是正方形边长，wall_size 是墙厚，单位都是像素。
 // maze_x、maze_y 是迷宫左上角坐标，maze_w、maze_h 是迷宫宽高，单位也是像素。
 module maze_config (
+    input  wire        clk, new_match, new_round,
     input  wire [15:0] random_value,
-    output wire [1:0] map_mode,
+    output reg  [1:0] map_mode = 2'd0, // 上电先用大地图
     output reg  [3:0] maze_cols, maze_rows,
     output reg  [6:0] cell_size, tank_size,
     output reg  [3:0] wall_size,
@@ -12,9 +13,24 @@ module maze_config (
     output wire [9:0] maze_x, maze_w,
     output reg  [9:0] maze_y, maze_h
 );
-    // LFSR 的非零值是 1～65535，每档各 21845 个值。
-    assign map_mode = (random_value <= 16'd21845) ? 2'd0 :
-                      (random_value <= 16'd43690) ? 2'd1 : 2'd2;
+    always @(posedge clk) begin
+        if (new_match) begin
+            // LFSR 的非零值是 1～65535，每档各 21845 个值。
+            if (random_value <= 16'd21845)
+                map_mode <= 2'd0;
+            else if (random_value <= 16'd43690)
+                map_mode <= 2'd1;
+            else
+                map_mode <= 2'd2;
+        end else if (new_round) begin
+            // 取随机数最低位，在当前地图之外的两档中二选一。
+            case (map_mode)
+                2'd0:    map_mode <= random_value[0] ? 2'd1 : 2'd2;
+                2'd1:    map_mode <= random_value[0] ? 2'd0 : 2'd2;
+                default: map_mode <= random_value[0] ? 2'd0 : 2'd1;
+            endcase
+        end
+    end
 
     // 三种地图都宽 576 像素，在 640 像素的画面里左右各留 32 像素。
     assign maze_x = 10'd32;

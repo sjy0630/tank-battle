@@ -19,7 +19,7 @@ module bullet_control (
     wire fire_press = frame_tick && fire && !fire_previous;
     always @(posedge clk) begin
         if (rst)
-            fire_previous <= 0;
+            fire_previous <= fire;
         else if (frame_tick)
             fire_previous <= fire;
     end

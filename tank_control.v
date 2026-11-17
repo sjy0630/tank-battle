@@ -1,4 +1,6 @@
-module tank_control(
+module tank_control #(
+    parameter [4:0] START_DIRECTION = 5'd0
+) (
     input  wire       clk,
     input  wire       rst,
     input  wire       frame_tick,   // 每帧更新一次位置
@@ -23,7 +25,7 @@ module tank_control(
     assign dir = tank_angle[7:3];
     always @(posedge clk) begin
         if(rst) begin
-            tank_angle <= 0;
+            tank_angle <= {START_DIRECTION, 3'b000};
         end
         else if(frame_tick) begin
             if(left & !right)

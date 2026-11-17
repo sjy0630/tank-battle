@@ -1,4 +1,6 @@
-module tank_sprite (
+module tank_sprite #(
+    parameter PLAYER2 = 0
+) (
     input  wire [9:0] h_cnt,
     input  wire [9:0] v_cnt,
     input  wire [9:0] h_tank,
@@ -62,9 +64,9 @@ module tank_sprite (
 
     always @(*) begin
         case (pixel_data)
-            2'b01: tank_rgb = COLOR_P1;//车身
-            2'b10: tank_rgb = 12'h632;//履带
-            2'b11: tank_rgb = 12'hA32;//炮塔和炮管
+            2'b01: tank_rgb = PLAYER2 ? COLOR_P2 : COLOR_P1;//车身
+            2'b10: tank_rgb = PLAYER2 ? 12'h235 : 12'h632;//履带
+            2'b11: tank_rgb = PLAYER2 ? 12'h36A : 12'hA32;//炮塔和炮管
             default: tank_rgb = COLOR_BG;//背景
         endcase
     end
