@@ -1,83 +1,202 @@
 # FPGA 坦克动荡
 
-这是一个运行在 Basys3 上的单坦克迷宫小游戏，使用 Verilog 编写，并通过 VGA 输出 640×480 画面。当前版本支持三档地图、坦克移动与挡墙、发射子弹和子弹反弹。
+运行在 Basys3 上的双人坦克迷宫对战游戏，使用 Verilog 实现，通过 VGA 输出 640×480 画面。当前支持随机迷宫、双人键盘操作、墙壁碰撞与子弹反弹、命中计分、自动换图，以及先得 5 分的比赛规则。
 
-## 一、模块结构
+仓库根目录对应原 Vivado 工程的 `tank_battle.srcs/sources_1/new`，包含设计源码与坦克贴图数据。
 
-系统以 [`top_module`](top.v) 为顶层。**控制侧决定游戏状态，显示侧把状态转换成 VGA 像素。** 顶层负责板级输入输出和两侧的连线。
+## 一、操作与游戏规则
 
-### 1. 模块实例层级
+### 1. 双人操作
 
-箭头表示模块实例化关系。`bullet_control` 用 `generate` 实例化 5 个 `bullet`。坦克和每颗子弹各有一套 `maze_collision`，每套内含两路 `maze_overlap`，分别检查 X 和 Y 的候选位置。
+| 动作 | 玩家 1（红方） | 玩家 2（蓝方） | 板上按键（控制红方） |
+| --- | --- | --- | --- |
+| 沿当前朝向前进 | W | ↑ | BTN_U |
+| 沿当前朝向后退 | S | ↓ | BTN_D |
+| 左转 | A | ← | BTN_L |
+| 右转 | D | → | BTN_R |
+| 开火 | Space | Enter | BTN_C |
+
+前进、后退沿坦克朝向移动，左右键用于旋转。开火在帧边界检测按下沿，按住只发一颗，再次发射需要先松开。
+
+键盘可以接到板载 USB HID 桥，由 [`ps2_keyboard.v`](ps2_keyboard.v) 解码 PS/2 Set 2 扫描码；也可以由电脑通过串口发送双方按键状态。两种输入按位合并，板上五向按键额外并入红方输入。
+
+| 开关 | 功能 |
+| --- | --- |
+| SW15 | 高电平复位并清空比分；拨下后开始比赛。再次拨上会重新抽取地图档位与种子 |
+| SW14 | 打开键盘和串口诊断 LED |
+
+### 2. 回合与胜负
+
+- 红方出生在左上角格心，初始朝下；蓝方出生在右下角格心，初始朝上。
+- 任意一方被子弹命中，对方得 1 分。本回合结束，存活坦克与子弹的位置暂停更新。
+- 双方在同一个判定帧被命中时，本回合平局，双方都不加分。
+- 未决出比赛胜者时，等待 120 帧（约 2 秒），自动生成下一回合地图并重置双方坦克、子弹。
+- 新回合从另外两档地图尺寸中抽取一档，保证相邻回合的地图档位不同。
+- 先得 5 分的一方获胜，显示 `P1 WINS` 或 `P2 WINS`、最终比分和 `SW15 RESET` 提示，等待复位重新开始。
+
+命中采用轴对齐碰撞盒重叠判定。子弹刚发射时忽略与发射者的重叠；一旦离开发射者碰撞盒，之后返回便可以击中自己。自击也按被击毁方的对手得分处理。
+
+VGA 顶部状态栏显示双方比分；板载数码管最左位显示红方得分，最右位显示蓝方得分，中间两位关闭。
+
+### 3. 子弹规则
+
+每名玩家有 5 个独立子弹槽，全场最多同时存在 10 颗子弹。点按开火时分配编号最小的空闲槽，槽位已满时本次发射不生效。子弹从坦克中心沿当前朝向发射，初速为同档坦克前进速度的两倍，撞墙后反转受阻轴的速度分量。
+
+每颗子弹存活 480 个物理更新帧，连续对战时约 8 秒，到期后回收槽位；回合切换会统一清空子弹。
+
+## 二、地图配置与随机生成
+
+### 1. 三档尺寸
+
+| 地图 | 模式 | 列×行 | 格子边长 | 墙厚 | 坦克贴图 | 坦克轴向速度 | 子弹半径 | 额外拆墙 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 大 | 0 | 12×9 | 48 px | 4 px | 32×32 px | 1.5 px/帧 | 3 px | 4～11 面 |
+| 中 | 1 | 8×6 | 72 px | 6 px | 48×48 px | 2.25 px/帧 | 5 px | 2～5 面 |
+| 小 | 2 | 6×4 | 96 px | 8 px | 64×64 px | 3 px/帧 | 6 px | 1～2 面 |
+
+三档地图宽度均为 576 px，左边界为 x=32。大、中地图高 432 px、上边界 y=40；小地图高 384 px、上边界 y=64。画面顶部保留 32 px 状态栏。
+
+上电默认使用大地图。开始新比赛时，[`maze_config.v`](maze_config.v) 按 LFSR 样本划分的三个等长区间选择档位；后续回合在当前档位之外二选一。档位相同的不同比赛也会依据种子重新生成墙布局。
+
+### 2. DFS 连通迷宫与额外环路
+
+实际墙布局由 [`maze_gen.v`](maze_gen.v) 生成，流程如下：
+
+1. **初始化。** 全部墙位置 1，从左上角 `(0,0)` 出发，仅标记起点已访问。
+2. **深度优先搜索。** 检查四邻格的边界和访问标记，选一个未访问邻格，保存当前坐标到回溯栈，拆开共用墙并进入邻格。没有新格可走时弹栈回退。
+3. **完成连通。** 无邻格可走且栈空时结束 DFS。N 个格子通过 N−1 条通路连成生成树，全图连通且没有环路。
+4. **增加环路。** 按地图大小确定额外拆墙数。随机选择一个扫描起点，只拆仍关闭的内墙；当前格没有目标时按行循环扫描。每额外拆一面墙，就增加一个独立环路，提供绕行路线。
+5. **提交地图。** 在 `PUBLISH` 状态一次性更新两组输出墙位，完成后释放 `busy`。
+
+状态转换为 `IDLE → SEARCH → PICK → REMOVE → PUBLISH → IDLE`；需要继续拆墙时从 `REMOVE` 返回 `PICK`，找不到当前格可拆的墙时留在 `REMOVE` 扫描下一格。
+
+随机数采用 16 位 LFSR。DFS 的方向选择是随机确定起始方向，再按“右、下、左、上”的循环顺序取第一个可走方向，具有方向偏向，不保证所有迷宫等概率生成。
+
+额外拆墙的扫描起点采用**拒绝采样**：随机行、列都在有效范围内才接受，任一越界就留在 `PICK`，等待下一拍的新候选值。这样避免把越界值集中映射到第 0 行、列。最终拆墙位置还受闭墙分布和顺序扫描影响，不等同于对全部内墙均匀抽样。
+
+地图生成时只修改 `next_right`、`next_bottom`，完成前保留上次提交的输出墙位。控制侧在换图期间保持坦克和子弹复位，并暂停物理更新，完成后才开始新回合。相同种子与配置可复现布局；算法保证连通，但没有单独约束出生点距离、对称性或路线公平性。
+
+### 3. 墙位存储
+
+[`maze_show.v`](maze_show.v) 和 [`maze_collision.v`](maze_collision.v) 共用生成器输出的墙位：
+
+- `right_walls[107:0]` 保存每格右墙，`bottom_walls[107:0]` 保存每格下墙；1 表示有墙，0 表示通路。
+- 编号统一为 `index = row * 12 + col`，小地图也使用 12 格的存储跨度。
+- 左墙读取左邻格的右墙，上墙读取上邻格的下墙；最左、最上外围边界单独处理，右、下外围墙在生成时保持封闭。
+
+[`maze_fixed.v`](maze_fixed.v) 保留了旧的固定墙布局，当前游戏控制链路使用 `maze_gen`。
+
+## 三、模块结构
+
+系统以 [`top_module`](top.v) 为顶层，控制侧计算状态，显示侧根据扫描坐标合成像素。所有时序逻辑使用板载 100 MHz 时钟，VGA 通过每四拍一次的像素使能推进扫描。
 
 ```mermaid
 flowchart TB
     top["top_module"]
-    top --> control["game_control｜游戏控制"]
+    top --> ps2["ps2_keyboard｜键盘解码"]
+    top --> uart["uart_keyboard｜串口按键"]
+    top --> control["game_control｜双人游戏控制"]
     top --> show["game_show｜VGA 显示"]
-
-    control --> config["maze_config"]
-    control --> fixedMap["maze_fixed"]
-    control --> tankControl["tank_control"]
-    control --> bulletControl["bullet_control"]
-
-    tankControl --> tankCollision["maze_collision｜坦克"]
-    tankCollision --> tankCheck["maze_overlap × 2｜查 X 和 Y"]
-    bulletControl -->|"实例化 5 份"| bullet["bullet｜单颗子弹"]
-    bullet --> bulletCollision["maze_collision｜每颗一套"]
-    bulletCollision --> bulletCheck["maze_overlap × 2｜查 X 和 Y"]
-
+    top --> score["seg7_hex｜数码管比分"]
+    control --> config["maze_config｜地图尺寸"]
+    control --> gen["maze_gen｜随机墙布局"]
+    control --> round["round_control｜回合与计分"]
+    control --> tank["tank_control × 2"]
+    control --> bullets["bullet_control × 2"]
+    tank --> tc["maze_collision｜每辆一套"]
+    bullets -->|"每名玩家 5 份"| bullet["bullet｜共 10 颗"]
+    bullet --> bc["maze_collision｜每颗一套"]
+    tc --> tx["maze_overlap × 2｜X/Y 检查"]
+    bc --> bx["maze_overlap × 2｜X/Y 检查"]
     show --> timing["vga_timing"]
-    show --> mazeShow["maze_show"]
-    show --> tankSprite["tank_sprite"]
-    show --> bulletShow["bullet_show"]
+    show --> maze["maze_show"]
+    show --> sprite["tank_sprite × 2"]
+    show --> shots["bullet_show × 2"]
+    show --> hud["hud_show｜比分与终局画面"]
 ```
 
-### 2. 控制与显示之间的信号流
+`ps2_keyboard` 和 `uart_keyboard` 的按键经顶层合并后送入控制侧。显示侧将 `frame_tick` 回送控制侧，每帧触发一次游戏状态更新；回合结束或地图生成时，控制侧会屏蔽物理更新脉冲。显示优先级为状态栏/终局覆盖层、红方坦克、蓝方坦克、墙、子弹、地面，消隐区输出黑色。
 
-```mermaid
-flowchart LR
-    buttons["板上按键与 SW15"] -->|"操作与复位"| control["game_control"]
-    control -->|"地图配置、墙位、坦克与子弹状态"| show["game_show"]
-    show -.->|"frame_tick｜每帧一个更新脉冲"| control
-    show -->|"RGB、Hsync、Vsync"| vga["VGA 显示器"]
-```
-
-1. **复位选图。** 控制侧锁存随机样本。`maze_config` 选地图档位，`maze_fixed` 用同一个档位输出对应的墙位。控制侧用墙位判断碰撞，显示侧用同一份墙位画墙。 [`game_control.v`](game_control.v) · [`maze_config.v`](maze_config.v) · [`maze_fixed.v`](maze_fixed.v)
-2. **每帧更新状态。** `vga_timing` 产生 `frame_tick`。`tank_control` 根据两个轴的碰撞结果提交位置。`bullet_control` 检测开火按键，只给第一个空闲的 `bullet` 发出 `launch`。每颗子弹各自处理移动、反弹和寿命，显示侧用 `bullet_active` 筛选要画的槽。 [`tank_control.v`](tank_control.v) · [`bullet_control.v`](bullet_control.v) · [`bullet.v`](bullet.v)
-3. **逐像素合成画面。** `vga_timing` 把扫描坐标送给墙、坦克和子弹绘制模块。`game_show` 在可见区按坦克、墙、子弹、地面的优先级选择颜色，消隐区输出黑色。 [`vga_timing.v`](vga_timing.v) · [`game_show.v`](game_show.v) · [`maze_show.v`](maze_show.v) · [`tank_sprite.v`](tank_sprite.v) · [`bullet_show.v`](bullet_show.v)
-
-[`param.vh`](param.vh) 是公共参数头文件，[`tank.mem`](tank.mem) 是坦克贴图 ROM 数据。`maze_gen.v` 和 `seg7_hex.v` 分别预留给随机墙布局和数码管显示。
-
-## 二、操作方式
-
-| 输入 | 功能 |
+| 文件 | 职责 |
 | --- | --- |
-| 上、下键 | 沿坦克当前朝向前进、后退 |
-| 左、右键 | 旋转坦克 |
-| 中心键 `BTN_C` | 点按发射一颗子弹。重新发射前需松开按键 |
-| `SW15` | 拨上复位并抽取地图，拨下开始游戏 |
+| [`top.v`](top.v) | 板级接口、输入合并、数码管比分和诊断 LED；顶层模块名为 `top_module` |
+| [`game_control.v`](game_control.v) | 地图生成调度、双方实体实例化、出生点、子弹命中与自击判定 |
+| [`round_control.v`](round_control.v) | 回合状态、计分、120 帧等待、先得 5 分的胜负控制 |
+| [`maze_config.v`](maze_config.v) | 地图档位选择及像素尺寸、贴图缩放配置 |
+| [`maze_gen.v`](maze_gen.v) | DFS、显式回溯栈、额外拆墙和完整墙位提交 |
+| [`maze_fixed.v`](maze_fixed.v) | 旧版固定布局数据，当前未接入游戏控制 |
+| [`maze_collision.v`](maze_collision.v) | `maze_collision` 与 `maze_overlap`，组合逻辑分轴碰撞 |
+| [`tank_control.v`](tank_control.v) | 坦克朝向、定点坐标、按键移动和挡墙 |
+| [`bullet_control.v`](bullet_control.v) | 开火按下沿检测和每名玩家 5 个槽位的发射分配 |
+| [`bullet.v`](bullet.v) | 单颗子弹的飞行、分轴反弹、寿命和回收 |
+| [`ps2_keyboard.v`](ps2_keyboard.v) | PS/2 帧接收、奇校验、扩展码/松键码和双方按键状态 |
+| [`uart_keyboard.v`](uart_keyboard.v) | 115200 波特率串口接收、双玩家状态包和断联松键 |
+| [`game_show.v`](game_show.v) | 墙、双方坦克与子弹、HUD 的逐像素合成 |
+| [`vga_timing.v`](vga_timing.v) | 扫描计数、行场同步、可见区和帧脉冲 |
+| [`maze_show.v`](maze_show.v) | 从墙位计算当前扫描像素是否属于墙壁 |
+| [`tank_sprite.v`](tank_sprite.v) | 32 方向坦克贴图查询、缩放与红蓝配色 |
+| [`bullet_show.v`](bullet_show.v) | 单名玩家的 5 颗活动子弹绘制 |
+| [`hud_show.v`](hud_show.v) | 比分文字、获胜方和复位提示 |
+| [`seg7_hex.v`](seg7_hex.v) | 四位数码管扫描，顶层仅启用最左和最右位 |
+| [`param.vh`](param.vh) | VGA、地图容量、速度、子弹上限和比赛规则参数 |
+| [`tank.mem`](tank.mem) | 32 个方向、每方向 16×16 的 2 位坦克贴图 ROM 数据 |
 
-上电默认使用大地图。每次进入复位时锁存一次 LFSR 的伪随机样本，以此选择一套固定墙布局。地图配置在本局中保持稳定，连续两次复位可能选中同一档。
+## 四、关键实现
 
-| 地图 | 格子数 | 格子边长 | 墙厚 | 坦克贴图 | 坦克速度 | 子弹半径 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 大 | 12×9 | 48 px | 4 px | 32×32 px | 1.5 px/帧 | 3 px |
-| 中 | 8×6 | 72 px | 6 px | 48×48 px | 2.25 px/帧 | 5 px |
-| 小 | 6×4 | 96 px | 8 px | 64×64 px | 3 px/帧 | 6 px |
+### 分轴碰撞与子弹反弹
 
-每颗子弹从坦克中心沿当前朝向发射，初速是同档坦克的两倍。场上最多同时存在 5 颗子弹，每颗存活 480 帧，约 8 秒。当前已实现子弹与墙的交互。子弹命中坦克、双人对战和计分属于后续开发内容。
+`maze_collision` 先通过第一路 `maze_overlap` 检查 `(next_x, y)`；X 受阻时保留原 `x`，再通过第二路检查 `(accepted_x, next_y)`。组合逻辑输出 `hit_x`、`hit_y`，实体在物理更新帧采样结果。坦克在受阻轴保留坐标；子弹还会反转该轴速度，另一轴可以继续运动。
 
-## 三、关键实现
+### 定点坐标与并行实体
 
-- **墙位是渲染和碰撞的共同依据。** 每个格子有一位右墙和一位下墙。三档地图都用 `row * 12 + col` 编号。绘墙时判断像素是否落在墙带，碰撞时判断整个碰撞盒是否覆盖墙带。
-- **组合逻辑完成分轴碰撞。** `maze_collision` 先用 `maze_overlap` 检查 `(next_x, y)`。如果 X 受阻，采用原坐标 `x`，再用第二路检查 `(accepted_x, next_y)`。组合逻辑输出 `hit_x`、`hit_y`，控制模块在 `frame_tick` 对应的时钟沿采样结果。坦克在受阻的轴上保留坐标，子弹还会反转该轴速度。 [`maze_collision.v`](maze_collision.v)
-- **每颗子弹只有两个状态。** `IDLE` 收到 `launch` 时保存初始坐标和速度，清零计数并进入 `FLYING`。之后每帧更新位置、速度和计数，到第 480 帧回到 `IDLE`，槽位可再次分配。 [`bullet.v`](bullet.v)
-- **用定点数保存亚像素位移。** `FRAC_BITS = 6`，位置寄存器中 64 个单位代表 1 像素。显示取整数像素坐标，状态更新继续保留小数部分。
+位置保留 6 位小数，即 64 个单位代表 1 px。坦克用 32 方向位移查表，根据地图档位缩放速度；显示侧只读取整数像素坐标。两辆坦克和 10 颗子弹各自维护状态与查墙逻辑，并行工作。
 
-## 四、验证记录
+子弹使用 `IDLE`、`FLYING` 两态，发射时保存位置和速度，飞行期间每个物理更新帧推进位置、反弹和寿命。命中检测由 `game_control` 汇总，`round_control` 在帧边界裁定本回合结果。
 
-- **当前组合查墙版**（[`62b5da3`](https://github.com/sjy0630/tank-battle/commit/62b5da37007e677c17cbaa2f0c07b2ef097eb9d2)）已通过 Vivado 2019.1 的 Verilog 源码编译检查。该版的布局布线时序与资源占用以重新生成的 Vivado 报告为准。
-- **早期流水线版**（[`d04f33a`](https://github.com/sjy0630/tank-battle/commit/d04f33a81efe85e57bc5cea18de243fd49f66acf)）对三档地图做过 1,272 次碰撞盒与逐像素参考判断的比对，并验证了贴墙滑动、横纵反弹、五发上限、到期回收和从中心键到 VGA 像素的链路。该版布线后满足 100 MHz 约束，最差建立时间余量为 +0.844 ns。
+### 串口控制协议
 
-仓库保存原工程 `sources_1/new` 中的设计源码。用 Vivado 重建时，将 `top_module` 设为综合顶层，加入 `tank.mem`，并使用原工程的 Basys3 引脚约束。
+[`uart_keyboard.v`](uart_keyboard.v) 按 100 MHz 时钟接收 **115200、8N1** 数据。一个完整按键包由两个连续字节构成：
+
+```text
+字节 1：101 f r l b u    （0xA0 | 红方按键位）
+字节 2：110 f r l b u    （0xC0 | 蓝方按键位）
+低五位：bit4=开火，bit3=右转，bit2=左转，bit1=后退，bit0=前进
+```
+
+例如仅红方前进发送 `A1 C0`，双方松键发送 `A0 C0`。收齐两个字节后同时更新双方状态，发送端应持续刷新按键包。连续 15 个 VGA 帧没有完整包（约 0.25 秒）时，串口按键自动清零。电脑端发送程序未包含在本源码仓库中。
+
+### LED 诊断
+
+LD15 为心跳，每 60 帧翻转一次；LD14 在 SW14 打开或比赛结束时点亮。SW14 打开后，其他 LED 含义如下，关闭时 LD13～LD0 熄灭：
+
+| LED | 含义 |
+| --- | --- |
+| LD13 | 曾检测到 PS/2 时钟下降沿，保留到复位 |
+| LD12 | 曾收到有效 PS/2 字节，保留到复位 |
+| LD11 | 曾发生 PS/2 帧错误或接收超时，保留到复位 |
+| LD10 | 当前合并后的 PS/2/串口游戏按键中至少一位按下 |
+| LD9 | 曾收到完整串口按键包，保留到复位 |
+| LD8 | 串口链路仍在有效收包期内 |
+| LD7～LD0 | 最近一个有效 PS/2 扫描码字节 |
+
+## 五、使用与验证
+
+### Vivado 工程重建
+
+1. 使用原 Basys3 工程，或新建对应开发板器件的 Vivado 工程，将仓库中的全部 `.v` 文件和 `param.vh` 加入设计源。
+2. 将综合顶层设为 **`top_module`**（文件为 `top.v`），并使 `param.vh` 所在目录可被包含。
+3. 把 `tank.mem` 作为 Memory Initialization File 加入工程，确保 `$readmemh("tank.mem", ...)` 在综合或仿真时能找到该文件。
+4. 加入原工程的 Basys3 XDC：100 MHz 时钟、SW15/SW14、五向按键、VGA、数码管、LED，以及使用键盘或串口时的 PS/2、UART 引脚。
+5. 运行综合、实现和比特流生成，通过 Hardware Manager 下载，连接 VGA 显示器与相应输入设备，使用 SW15 复位后开始。
+
+仓库当前仅保存设计源码与贴图，未包含完整 `.xpr` 工程、XDC、电脑端串口程序及仿真测试文件。VGA 使用 25 MHz 像素使能，扫描总数为 800×525，帧率约 59.52 Hz；文中的秒数按约 60 帧/秒描述。
+
+### 验证记录与范围
+
+2026-11-17 在本地 Vivado 2019.1 仿真中，对拒绝采样修改后的地图生成器完成了以下检查：
+
+- **768 组候选坐标**：对三档尺寸各穷举 256 对候选行列，验证合法坐标原样接受、越界坐标重试、采样时 LFSR 继续推进，且不提前提交地图。
+- **192 张地图**：每档尺寸使用 64 个种子，检查全图连通、外围封闭、额外开口数及其与抽取目标一致、不同种子产生变化，以及回合切换期间不提交半成品地图、不启用物理更新。
+- 上述 192 张样本中最长生成时间为 **320 个时钟周期**；这是样本统计值，不是所有种子的最坏周期保证。
+
+测试文件与日志目前保存在原本地工程，未随本次设计源码同步到仓库。以上检查不代表当前完整设计已完成重新布局布线或上板验收；100 MHz 时序裕量、资源占用和硬件运行效果应以当前源码重新生成的 Vivado 报告及实测为准。
